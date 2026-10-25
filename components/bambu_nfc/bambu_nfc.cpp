@@ -236,7 +236,11 @@ void BambuNfc::loop() {
     return;
 
   bool success = false;
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  pn532::PN532Frame read;
+#else
   std::vector<uint8_t> read;
+#endif
 
   if (ready == pn532::READY) {
     success = this->read_response(pn532::PN532_COMMAND_INLISTPASSIVETARGET, read);
