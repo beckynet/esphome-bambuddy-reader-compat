@@ -2,11 +2,14 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/version.h"
 #include "esphome/components/pn532/pn532.h"
 #include "esphome/components/spi/spi.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/button/button.h"
+
+#include <vector>
 
 #include "bambu_colors.h"
 #include "bambu_densities.h"
@@ -32,6 +35,16 @@ class BambuNfc : public pn532::PN532,
   void dump_config() override;
   void loop() override;
   void clear_sensors();
+
+  // Keep registration storage owned by this derived component. In ESPHome
+  // 2026.10 the PN532 base class only allocates these lists when codegen emits
+  // the corresponding count defines; BambuNfc's custom loop must work with or
+  // without those optional entities.
+  void register_tag(pn532::PN532BinarySensor *tag) { this->bambu_binary_sensors_.push_back(tag); }
+  void register_ontag_trigger(nfc::NfcOnTagTrigger *trigger) { this->bambu_on_tag_triggers_.push_back(trigger); }
+  void register_ontagremoved_trigger(nfc::NfcOnTagTrigger *trigger) {
+    this->bambu_on_tag_removed_triggers_.push_back(trigger);
+  }
 
   void set_filament_type_sensor(text_sensor::TextSensor *s) { filament_type_sensor_ = s; }
   void set_filament_color_sensor(text_sensor::TextSensor *s) { filament_color_sensor_ = s; }
@@ -61,9 +74,15 @@ class BambuNfc : public pn532::PN532,
 
  protected:
   bool is_read_ready() override;
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  bool write_data(std::span<const uint8_t> data) override;
+  bool read_data(pn532::PN532Frame &data, size_t len) override;
+  bool read_response(uint8_t command, pn532::PN532Frame &data) override;
+#else
   bool write_data(const std::vector<uint8_t> &data) override;
   bool read_data(std::vector<uint8_t> &data, uint8_t len) override;
   bool read_response(uint8_t command, std::vector<uint8_t> &data) override;
+#endif
 
   bool read_bambu_data_(nfc::NfcTagUid &uid);
   bool derive_bambu_keys_(const uint8_t *uid, size_t uid_len, uint8_t *keys_out);
@@ -93,6 +112,9 @@ class BambuNfc : public pn532::PN532,
 
   std::vector<BambuSuccessTrigger *> success_triggers_;
   std::vector<BambuErrorTrigger *> error_triggers_;
+  std::vector<pn532::PN532BinarySensor *> bambu_binary_sensors_;
+  std::vector<nfc::NfcOnTagTrigger *> bambu_on_tag_triggers_;
+  std::vector<nfc::NfcOnTagTrigger *> bambu_on_tag_removed_triggers_;
 };
 
 }  // namespace bambu_nfc

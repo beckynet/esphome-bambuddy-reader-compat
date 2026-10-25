@@ -36,7 +36,11 @@ bool BambuNfc::is_read_ready() {
   return ready;
 }
 
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+bool BambuNfc::write_data(std::span<const uint8_t> data) {
+#else
 bool BambuNfc::write_data(const std::vector<uint8_t> &data) {
+#endif
   this->enable();
   delay(2);
   this->write_byte(0x01);
@@ -45,20 +49,38 @@ bool BambuNfc::write_data(const std::vector<uint8_t> &data) {
   return true;
 }
 
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+bool BambuNfc::read_data(pn532::PN532Frame &data, size_t len) {
+#else
 bool BambuNfc::read_data(std::vector<uint8_t> &data, uint8_t len) {
+#endif
   if (this->read_ready_(true) != pn532::PN532ReadReady::READY)
     return false;
   this->enable();
   delay(2);
   this->write_byte(0x03);
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  data.clear();
+  data.push_back(0x01);
+  for (size_t i = 0; i < len; i++)
+    data.push_back(0);
+  this->read_array(data.data() + 1, len);
+#else
   data.resize(len);
   this->read_array(data.data(), len);
+#endif
   this->disable();
+#if ESPHOME_VERSION_CODE < VERSION_CODE(2026, 10, 0)
   data.insert(data.begin(), 0x01);
+#endif
   return true;
 }
 
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+bool BambuNfc::read_response(uint8_t command, pn532::PN532Frame &data) {
+#else
 bool BambuNfc::read_response(uint8_t command, std::vector<uint8_t> &data) {
+#endif
   if (this->read_ready_(true) != pn532::PN532ReadReady::READY)
     return false;
   this->enable();
@@ -82,18 +104,36 @@ bool BambuNfc::read_response(uint8_t command, std::vector<uint8_t> &data) {
     return false;
   }
   uint8_t len = full_len - 1;
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  std::array<uint8_t, pn532::PN532_FRAME_MAX_SIZE> response{};
+  this->read_array(response.data(), len + 1);
+#else
   data.resize(len + 1);
   this->read_array(data.data(), len + 1);
+#endif
   this->disable();
   uint8_t checksum = header[5] + header[6];
-  for (int i = 0; i < len - 1; i++)
+  for (int i = 0; i < len - 1; i++) {
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+    checksum += response[i];
+#else
     checksum += data[i];
+#endif
+  }
   checksum = ~checksum + 1;
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  if (response[len - 1] != checksum || response[len] != 0x00)
+    return false;
+  data.clear();
+  for (int i = 0; i < len - 1; i++)
+    data.push_back(response[i]);
+#else
   if (data[len - 1] != checksum)
     return false;
   if (data[len] != 0x00)
     return false;
   data.erase(data.end() - 2, data.end());
+#endif
   return true;
 }
 
@@ -209,7 +249,7 @@ void BambuNfc::loop() {
   if (!success) {
     if (!this->current_uid_.empty()) {
       auto tag = make_unique<nfc::NfcTag>(this->current_uid_);
-      for (auto *trigger : this->triggers_ontagremoved_)
+      for (auto *trigger : this->bambu_on_tag_removed_triggers_)
         trigger->process(tag);
     }
     this->current_uid_ = {};
@@ -221,7 +261,7 @@ void BambuNfc::loop() {
   if (num_targets != 1) {
     if (!this->current_uid_.empty()) {
       auto tag = make_unique<nfc::NfcTag>(this->current_uid_);
-      for (auto *trigger : this->triggers_ontagremoved_)
+      for (auto *trigger : this->bambu_on_tag_removed_triggers_)
         trigger->process(tag);
     }
     this->current_uid_ = {};
@@ -235,7 +275,7 @@ void BambuNfc::loop() {
 
   nfc::NfcTagUid nfcid(read.begin() + 6, read.begin() + 6 + nfcid_length);
 
-  for (auto *bin_sens : this->binary_sensors_)
+  for (auto *bin_sens : this->bambu_binary_sensors_)
     bin_sens->process(nfcid);
 
   if (nfcid.size() == this->current_uid_.size()) {
@@ -274,7 +314,7 @@ void BambuNfc::loop() {
 
     // Fire standard on_tag triggers
     auto tag = make_unique<nfc::NfcTag>(nfcid, nfc::MIFARE_CLASSIC);
-    for (auto *trigger : this->triggers_ontag_)
+    for (auto *trigger : this->bambu_on_tag_triggers_)
       trigger->process(tag);
   }
 
@@ -284,7 +324,7 @@ void BambuNfc::loop() {
 
 // ---- Bambu Data Reading ----
 
-static std::string trim_string(const std::vector<uint8_t> &data) {
+template<typename Container> static std::string trim_string(const Container &data) {
   std::string s(data.begin(), data.end());
   size_t end = s.find_last_not_of(std::string("\0 ", 2));
   if (end == std::string::npos)
@@ -300,7 +340,7 @@ static void publish_num(sensor::Sensor *s, float val) {
   if (s != nullptr) s->publish_state(val);
 }
 
-static std::string format_hex(const std::vector<uint8_t> &data, size_t max_len = 16) {
+template<typename Container> static std::string format_hex(const Container &data, size_t max_len = 16) {
   char buf[33];
   size_t len = data.size() > max_len ? max_len : data.size();
   for (size_t i = 0; i < len; i++)
@@ -309,13 +349,13 @@ static std::string format_hex(const std::vector<uint8_t> &data, size_t max_len =
   return std::string(buf);
 }
 
-static float read_float_le(const std::vector<uint8_t> &data, size_t offset) {
+template<typename Container> static float read_float_le(const Container &data, size_t offset) {
   float val;
   memcpy(&val, &data[offset], 4);
   return val;
 }
 
-static uint16_t read_uint16_le(const std::vector<uint8_t> &data, size_t offset) {
+template<typename Container> static uint16_t read_uint16_le(const Container &data, size_t offset) {
   return data[offset] | (data[offset + 1] << 8);
 }
 
@@ -334,7 +374,11 @@ bool BambuNfc::read_bambu_data_(nfc::NfcTagUid &uid) {
   ESP_LOGD(TAG, "Bambu keys derived, reading tag data...");
 
   // ---- Phase 1: Read all blocks into local storage ----
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 10, 0)
+  pn532::MifareReadData b1{}, b2{}, b4{}, b5{}, b6{}, b8{}, b9{}, b10{}, b12{}, b14{};
+#else
   std::vector<uint8_t> b1, b2, b4, b5, b6, b8, b9, b10, b12, b14;
+#endif
 
   // Sector 0 (keys[0..5]): blocks 1, 2
   if (!this->auth_mifare_classic_block_(uid, 1, nfc::MIFARE_CMD_AUTH_A, &keys[0])) {

@@ -1,6 +1,6 @@
 ## NFC
 external_components:
-  - source: github://bemble/esphome-bambuddy-reader/components
+  - source: github://beckynet/esphome-bambuddy-reader-compat/components@main
     components: [bambu_nfc]
 
 spi:
